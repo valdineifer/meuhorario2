@@ -353,6 +353,151 @@ namespace :crawler do
     puts '-----------------------------------------------------------------------'
   end
 
+  desc 'Crawl all courses class pages'
+  task :pre_classes => :environment do
+    require 'rubygems'
+    require 'mechanize'
+
+    puts '-----------------------------------------------------------------------'
+    puts '-> Starting classes crawling...'
+
+    days = ['a combinar', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM']
+
+    agent = Mechanize.new
+    agent.open_timeout = 300
+    agent.read_timeout = 300
+
+    Discipline.order(:name).each do |discipline|
+      puts "Disciplina - #{discipline.code}"
+
+      hub = agent.get "https://alunoweb.ufba.br/SiacWWW/ExibirEmentaPublico.do?cdDisciplina=#{discipline.code}&nuPerInicial=#{discipline.curriculum}"
+      
+      rows = hub.search('center:nth-of-type(3) tr')
+      
+      puts "List length: #{rows.size}\n"
+      
+      if rows.size <= 2
+        puts "No class for it"
+      end
+      
+      rows.drop(2).each do |row|
+        list = row.css('td').map{|td| td.text}
+      
+        puts
+        puts list
+        puts
+      
+        page_day = list[0]
+        page_full_hour = list[1]
+        page_class = list[2]
+        page_teacher = list[3]
+      
+        class_n = (page_class[1..-1]*2).concat("00")
+        vacancies = 0
+      
+        # puts "Search discipline class by class number: #{class_n} or create if dont find it"
+        d_class = DisciplineClass.where(discipline: discipline, class_number: class_n).first
+        unless d_class
+          d_class = DisciplineClass.new
+          d_class.discipline = discipline
+          d_class.class_number = class_n
+          d_class.save
+        end
+      
+        # puts "Search class offer by discipline class or create if dont find it"
+        dc_offer = DisciplineClassOffer.where(discipline_class: d_class).first
+        unless dc_offer
+          dc_offer = DisciplineClassOffer.new
+          dc_offer.discipline_class = d_class
+          # dc_offer.vacancies = 1 # set only for ...
+          dc_offer.save
+        end
+        # --- Fazendo apenas a primeira parte do código comentado ---
+        # --- Aqui não vincula ao curso porque no alunoweb não tem indicação de curso ---
+        # --- TODO: Verificar workaround depois ---
+        # courses.each do |course|
+        #   dc_offer = course.discipline_class_offers.where(discipline_class: d_class).first
+        #   unless dc_offer
+        #     dc_offer = DisciplineClassOffer.new
+        #     dc_offer.discipline_class = d_class
+        #     dc_offer.vacancies = vacancies
+        #     dc_offer.save
+      
+        #     cc_offer = CourseClassOffer.new
+        #     cc_offer.course = course
+        #     cc_offer.discipline_class_offer = dc_offer
+        #     cc_offer.save
+        #   end
+        # end
+      
+        day = page_day
+        day_number = days.index day
+      
+        if page_full_hour != ''
+          if day_number == 0
+            start_hour = 0
+            start_minute = 0
+            end_hour = 0
+            end_minute = 0
+            first_class_number = 0
+            class_count = 0
+          else
+            times = page_full_hour.split ' às '
+            start_time = times[0].split ':'
+            start_hour = start_time[0].to_i
+            start_minute = start_time[1].to_i
+      
+            end_time = times[1].split ':'
+            end_hour = end_time[0].to_i
+            end_minute = end_time[1].to_i
+      
+            n_classes = ((end_hour - start_hour) * 60 + (end_minute - start_minute)) / 55
+      
+            first_class_number = (start_hour * 60) - (7 * 60) + start_minute
+            first_class_number -= 30 if start_hour > 12
+            first_class_number /= 55
+            first_class_number += 1
+          end
+      
+          # puts "Search schedule by 'd_class', 'day_number', 'start_hour' and 'start_minute' or create if dont exists"
+          schedule = Schedule
+            .where(discipline_class: d_class, day: day_number, start_hour: start_hour, start_minute: start_minute)
+            .first
+          unless schedule
+            schedule = Schedule.new
+            schedule.day = day_number
+            schedule.start_hour = start_hour
+            schedule.start_minute = start_minute
+            schedule.end_hour = end_hour
+            schedule.end_minute = end_minute
+            schedule.first_class_number = first_class_number
+            schedule.class_count = n_classes
+            schedule.discipline_class = d_class
+            schedule.save
+          end
+        end
+      
+        professor_name = page_teacher
+        # puts "Search professor by name or create if dont exists"
+        professor = Professor.find_by_name professor_name
+        unless professor
+          professor = Professor.new
+          professor.name = professor_name
+          professor.save
+        end
+      
+        # puts "Search professor_schedule or create if dont exists"
+        professor_schedule = ProfessorSchedule.where(schedule: schedule, professor: professor).first
+        unless professor_schedule
+          professor_schedule = ProfessorSchedule.new
+          professor_schedule.schedule = schedule
+          professor_schedule.professor = professor
+          professor_schedule.save
+        end
+      end
+    end
+  end
+
   desc 'Downcase and capitalize discipline names and upcase roman numbers'
   task :titleize => :environment do
     puts '-----------------------------------------------------------------------'
